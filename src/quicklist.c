@@ -227,6 +227,7 @@ REDIS_STATIC int __quicklistCompressNode(quicklistNode *node) {
     /* Cancel if compression fails or doesn't compress small enough */
     if (((lzf->sz = lzf_compress(node->entry, node->sz, lzf->compressed,
                                  node->sz)) == 0) ||
+                                 //节省字节至少大于8
         lzf->sz + MIN_COMPRESS_IMPROVE >= node->sz) {
         /* lzf_compress aborts/rejects compression if value not compressible. */
         zfree(lzf);
@@ -451,6 +452,7 @@ _quicklistNodeSizeMeetsOptimizationRequirement(const size_t sz,
 
     size_t offset = (-fill) - 1;
     if (offset < (sizeof(optimization_level) / sizeof(*optimization_level))) {
+        //长度小于fill级别对应的optimization_level
         if (sz <= optimization_level[offset]) {
             return 1;
         } else {
@@ -477,12 +479,16 @@ REDIS_STATIC int _quicklistNodeAllowInsert(const quicklistNode *node,
      * Note: No need to check for overflow below since both `node->sz` and
      * `sz` are to be less than 1GB after the plain/large element check above. */
     size_t new_sz = node->sz + sz + SIZE_ESTIMATE_OVERHEAD;
+    //true:fill<0 且 new_size小于 optimization_level[(-fill)-1]
+    //fill<0,限制node的listpack总字节数
     if (likely(_quicklistNodeSizeMeetsOptimizationRequirement(new_sz, fill)))
         return 1;
     /* when we return 1 above we know that the limit is a size limit (which is
      * safe, see comments next to optimization_level and SIZE_SAFETY_LIMIT) */
+    //true:new_sz>8192
     else if (!sizeMeetsSafetyLimit(new_sz))
         return 0;
+    //fill>0,限制listpack的entry数量
     else if ((int)node->count < fill)
         return 1;
     else
@@ -540,17 +546,21 @@ static void __quicklistInsertPlainNode(quicklist *quicklist, quicklistNode *old_
  * Returns 1 if new head created. */
 int quicklistPushHead(quicklist *quicklist, void *value, size_t sz) {
     quicklistNode *orig_head = quicklist->head;
-
+    //数据字节数大于（1<<30），插入链表
+    //使用likely()，执行 if 后面的语句的机会更大，使用 unlikely()，执行 else 后面的语句的机会更大。
     if (unlikely(isLargeElement(sz))) {
         __quicklistInsertPlainNode(quicklist, quicklist->head, value, sz, 0);
         return 1;
     }
-
+    //每个node是lispack
     if (likely(
             _quicklistNodeAllowInsert(quicklist->head, quicklist->fill, sz))) {
+        //头节点listpack
         quicklist->head->entry = lpPrepend(quicklist->head->entry, value, sz);
+        //更新头节点的字节数量
         quicklistNodeUpdateSz(quicklist->head);
     } else {
+        //head放不下，创建新node插入到头
         quicklistNode *node = quicklistCreateNode();
         node->entry = lpPrepend(lpNew(0), value, sz);
 
@@ -1520,7 +1530,7 @@ int quicklistPopCustom(quicklist *quicklist, int where, unsigned char **data,
 
     /* The head and tail should never be compressed */
     assert(node->encoding != QUICKLIST_NODE_ENCODING_LZF);
-
+    //plain node
     if (unlikely(QL_NODE_IS_PLAIN(node))) {
         if (data)
             *data = saver(node->entry, node->sz);
@@ -1529,20 +1539,23 @@ int quicklistPopCustom(quicklist *quicklist, int where, unsigned char **data,
         quicklistDelIndex(quicklist, node, NULL);
         return 1;
     }
-
+    //listpacked node
     p = lpSeek(node->entry, pos);
     vstr = lpGetValue(p, &vlen, &vlong);
     if (vstr) {
+        //string
         if (data)
             *data = saver(vstr, vlen);
         if (sz)
             *sz = vlen;
     } else {
+        //long long
         if (data)
             *data = NULL;
         if (sval)
             *sval = vlong;
     }
+    //plain node 直接删除，packednode，当node->count==0，删除
     quicklistDelIndex(quicklist, node, &p);
     return 1;
 }

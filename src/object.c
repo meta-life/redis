@@ -1384,6 +1384,7 @@ int objectSetLRUOrLFU(robj *val, long long lfu_freq, long long lru_idle,
     if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
         if (lfu_freq >= 0) {
             serverAssert(lfu_freq <= 255);
+            //16位时间，8位频次
             val->lru = (LFUGetTimeInMinutes()<<8) | lfu_freq;
             return 1;
         }

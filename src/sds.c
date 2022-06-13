@@ -120,13 +120,17 @@ sds _sdsnewlen(const void *init, size_t initlen, int trymalloc) {
         init = NULL;
     else if (!init)
         memset(sh, 0, hdrlen+initlen+1);
+    //定位到buf的位置
     s = (char*)sh+hdrlen;
+    //指向flags
     fp = ((unsigned char*)s)-1;
+    //多减\0
     usable = usable-hdrlen-1;
     if (usable > sdsTypeMaxSize(type))
         usable = sdsTypeMaxSize(type);
     switch(type) {
         case SDS_TYPE_5: {
+            //高三位类型，低五位长度
             *fp = type | (initlen << SDS_TYPE_BITS);
             break;
         }
@@ -238,6 +242,7 @@ void sdsclear(sds s) {
  * by sdslen(), but only the free buffer space we have. */
 sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {
     void *sh, *newsh;
+    //可用空间:alloc-len
     size_t avail = sdsavail(s);
     size_t len, newlen, reqlen;
     char type, oldtype = s[-1] & SDS_TYPE_MASK;
@@ -246,18 +251,21 @@ sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {
 
     /* Return ASAP if there is enough space left. */
     if (avail >= addlen) return s;
-
+    //原字符串长度
     len = sdslen(s);
     sh = (char*)s-sdsHdrSize(oldtype);
     reqlen = newlen = (len+addlen);
     assert(newlen > len);   /* Catch size_t overflow */
     if (greedy == 1) {
+        //假设扩容后长度小于1M，2倍扩容
         if (newlen < SDS_MAX_PREALLOC)
+            // (len+addlen)*2
             newlen *= 2;
         else
+            //  (len+addlen)+1M
             newlen += SDS_MAX_PREALLOC;
     }
-
+    //根据长度决定头类型
     type = sdsReqType(newlen);
 
     /* Don't use type 5: the user is appending to the string and type 5 is
@@ -268,23 +276,29 @@ sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy) {
     hdrlen = sdsHdrSize(type);
     assert(hdrlen + newlen + 1 > reqlen);  /* Catch size_t overflow */
     if (oldtype==type) {
+        //头类型没改变，扩容buf数组
         newsh = s_realloc_usable(sh, hdrlen+newlen+1, &usable);
         if (newsh == NULL) return NULL;
         s = (char*)newsh+hdrlen;
     } else {
         /* Since the header size changes, need to move the string forward,
          * and can't use realloc */
+        //申请新内存
         newsh = s_malloc_usable(hdrlen+newlen+1, &usable);
         if (newsh == NULL) return NULL;
+        //移动原buf内存到新位置
         memcpy((char*)newsh+hdrlen, s, len+1);
         s_free(sh);
+        // 偏移sds起地址
         s = (char*)newsh+hdrlen;
+        //设置flags、len
         s[-1] = type;
         sdssetlen(s, len);
     }
     usable = usable-hdrlen-1;
     if (usable > sdsTypeMaxSize(type))
         usable = sdsTypeMaxSize(type);
+    //设置alloc
     sdssetalloc(s, usable);
     return s;
 }

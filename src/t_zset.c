@@ -132,22 +132,32 @@ int zslRandomLevel(void) {
  * of the passed SDS string 'ele'. */
 zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL], *x;
+    //排名
     unsigned long rank[ZSKIPLIST_MAXLEVEL];
     int i, level;
 
     serverAssert(!isnan(score));
     x = zsl->header;
+    //从顶层往下遍历
     for (i = zsl->level-1; i >= 0; i--) {
         /* store rank that is crossed to reach the insert position */
+        //x已经指向上一层update节点，所以当前层x的rank可以在上一层rank基础上计数
+        //不用每一层都从头节点开始计数，除顶层之外，每一层都可以从上一层的update节点位置开始
         rank[i] = i == (zsl->level-1) ? 0 : rank[i+1];
+        //找到当前层待插入位置的前一个节点
+        //前向节点不为空且节点分数小于新对象的，继续前进
         while (x->level[i].forward &&
                 (x->level[i].forward->score < score ||
+                //得分一样比较值的字典顺序
                     (x->level[i].forward->score == score &&
                     sdscmp(x->level[i].forward->ele,ele) < 0)))
         {
+            //i个节点i层头节点到update[i]的距离
             rank[i] += x->level[i].span;
+            //向前找插入位置
             x = x->level[i].forward;
         }
+        //i层被插入位置的前继节点
         update[i] = x;
     }
     /* we assume the element is not already inside, since we allow duplicated
@@ -165,23 +175,28 @@ zskiplistNode *zslInsert(zskiplist *zsl, double score, sds ele) {
     }
     x = zslCreateNode(level,score,ele);
     for (i = 0; i < level; i++) {
+        //把x插入到update后
         x->level[i].forward = update[i]->level[i].forward;
         update[i]->level[i].forward = x;
 
         /* update span covered by update[i] as x is inserted here */
+        //插入位置原先跟下一节点的距离-(x前继节点底层的排名-上次层的排名)
         x->level[i].span = update[i]->level[i].span - (rank[0] - rank[i]);
         update[i]->level[i].span = (rank[0] - rank[i]) + 1;
     }
 
     /* increment span for untouched levels */
+    //插入了新节点，所以level层往上的节点距离+1
     for (i = level; i < zsl->level; i++) {
         update[i]->level[i].span++;
     }
-
+    //新插入节点的前一个节点一定是update[0]
     x->backward = (update[0] == zsl->header) ? NULL : update[0];
+        //x不是最后一个节点，更新下一个节点的后继节点
     if (x->level[0].forward)
         x->level[0].forward->backward = x;
     else
+        //x是最后一个节点
         zsl->tail = x;
     zsl->length++;
     return x;
@@ -1006,8 +1021,10 @@ unsigned char *zzlFind(unsigned char *lp, sds ele, double *score) {
     unsigned char *eptr, *sptr;
 
     if ((eptr = lpFirst(lp)) == NULL) return NULL;
+    //找到ele的entry
     eptr = lpFind(lp, eptr, (unsigned char*)ele, sdslen(ele), 1);
     if (eptr) {
+        //下一个就是score的entry
         sptr = lpNext(lp,eptr);
         serverAssert(sptr != NULL);
 
@@ -1423,6 +1440,7 @@ int zsetAdd(robj *zobj, double score, sds ele, int in_flags, int *out_flags, dou
 
             /* Remove and re-insert when score changes. */
             if (score != curscore) {
+                //新的分数不会还在原区间，更新分数；否则删除原节点插入新节点
                 znode = zslUpdateScore(zs->zsl,curscore,ele,score);
                 /* Note that we did not removed the original element from
                  * the hash table representing the sorted set, so we just

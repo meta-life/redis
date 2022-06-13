@@ -1679,6 +1679,7 @@ int expireIfNeeded(redisDb *db, robj *key, int force_delete_expired) {
      *
      * When replicating commands from the master, keys are never considered
      * expired. */
+    //replica不处理过期，只等待同步的del或unlink命令
     if (server.masterhost != NULL) {
         if (server.current_client == server.master) return 0;
         if (!force_delete_expired) return 1;

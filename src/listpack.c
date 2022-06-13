@@ -54,20 +54,20 @@
 #define LP_ENCODING_STRING 1
 
 #define LP_ENCODING_7BIT_UINT 0
-#define LP_ENCODING_7BIT_UINT_MASK 0x80
+#define LP_ENCODING_7BIT_UINT_MASK 0x80 //128
 #define LP_ENCODING_IS_7BIT_UINT(byte) (((byte)&LP_ENCODING_7BIT_UINT_MASK)==LP_ENCODING_7BIT_UINT)
 #define LP_ENCODING_7BIT_UINT_ENTRY_SIZE 2
 
-#define LP_ENCODING_6BIT_STR 0x80
-#define LP_ENCODING_6BIT_STR_MASK 0xC0
+#define LP_ENCODING_6BIT_STR 0x80 //128
+#define LP_ENCODING_6BIT_STR_MASK 0xC0 //192
 #define LP_ENCODING_IS_6BIT_STR(byte) (((byte)&LP_ENCODING_6BIT_STR_MASK)==LP_ENCODING_6BIT_STR)
 
-#define LP_ENCODING_13BIT_INT 0xC0
-#define LP_ENCODING_13BIT_INT_MASK 0xE0
+#define LP_ENCODING_13BIT_INT 0xC0 //192
+#define LP_ENCODING_13BIT_INT_MASK 0xE0 //224
 #define LP_ENCODING_IS_13BIT_INT(byte) (((byte)&LP_ENCODING_13BIT_INT_MASK)==LP_ENCODING_13BIT_INT)
 #define LP_ENCODING_13BIT_INT_ENTRY_SIZE 3
 
-#define LP_ENCODING_12BIT_STR 0xE0
+#define LP_ENCODING_12BIT_STR 0xE0 //240
 #define LP_ENCODING_12BIT_STR_MASK 0xF0
 #define LP_ENCODING_IS_12BIT_STR(byte) (((byte)&LP_ENCODING_12BIT_STR_MASK)==LP_ENCODING_12BIT_STR)
 
@@ -243,7 +243,9 @@ int lpStringToInt64(const char *s, unsigned long slen, int64_t *value) {
 unsigned char *lpNew(size_t capacity) {
     unsigned char *lp = lp_malloc(capacity > LP_HDR_SIZE+1 ? capacity : LP_HDR_SIZE+1);
     if (lp == NULL) return NULL;
+    //字节最大支持2^32次方
     lpSetTotalBytes(lp,LP_HDR_SIZE+1);
+    //长度最大2^16次方
     lpSetNumElements(lp,0);
     lp[LP_HDR_SIZE] = LP_EOF;
     return lp;
@@ -345,21 +347,22 @@ static inline int lpEncodeGetType(unsigned char *ele, uint32_t size, unsigned ch
  * The function returns the number of bytes used to encode it, from
  * 1 to 5. If 'buf' is NULL the function just returns the number of bytes
  * needed in order to encode the backlen. */
+//大端模式存储,低位字节保存在内存高地址
 static inline unsigned long lpEncodeBacklen(unsigned char *buf, uint64_t l) {
     if (l <= 127) {
         if (buf) buf[0] = l;
         return 1;
     } else if (l < 16383) {
         if (buf) {
-            buf[0] = l>>7;
-            buf[1] = (l&127)|128;
+            buf[0] = l>>7;//高位
+            buf[1] = (l&127)|128;//l&127截掉高位保留低位，首字节是1
         }
         return 2;
     } else if (l < 2097151) {
         if (buf) {
             buf[0] = l>>14;
-            buf[1] = ((l>>7)&127)|128;
-            buf[2] = (l&127)|128;
+            buf[1] = ((l>>7)&127)|128;//首字节是1
+            buf[2] = (l&127)|128;//首字节是1
         }
         return 3;
     } else if (l < 268435455) {
@@ -389,6 +392,7 @@ static inline uint64_t lpDecodeBacklen(unsigned char *p) {
     uint64_t shift = 0;
     do {
         val |= (uint64_t)(p[0] & 127) << shift;
+        //每个字节的第一个 bit 用于标识；0代表结束，1代表尚未结束
         if (!(p[0] & 128)) break;
         shift += 7;
         p--;
@@ -486,9 +490,13 @@ unsigned char *lpNext(unsigned char *lp, unsigned char *p) {
 unsigned char *lpPrev(unsigned char *lp, unsigned char *p) {
     assert(p);
     if (p-lp == LP_HDR_SIZE) return NULL;
+    //移动指针到上一entry的最有一个字节
     p--; /* Seek the first backlen byte of the last element. */
+    //计算entry长度， entrylen
     uint64_t prevlen = lpDecodeBacklen(p);
+    //计算保存entrylen占用的字节数
     prevlen += lpEncodeBacklen(NULL,prevlen);
+    //移动指针到第一个字节
     p -= prevlen-1; /* Seek the first byte of the previous entry. */
     lpAssertValidEntry(lp, lpBytes(lp), p);
     return p;
@@ -783,6 +791,7 @@ unsigned char *lpFind(unsigned char *lp, unsigned char *p, unsigned char *s,
 unsigned char *lpInsert(unsigned char *lp, unsigned char *elestr, unsigned char *eleint,
                         uint32_t size, unsigned char *p, int where, unsigned char **newp)
 {
+    //lpInsert(lp,ele,NULL,size,eofptr,LP_BEFORE,NULL);
     unsigned char intenc[LP_MAX_INT_ENCODING_LEN];
     unsigned char backlen[LP_MAX_BACKLEN_SIZE];
 
@@ -856,13 +865,15 @@ unsigned char *lpInsert(unsigned char *lp, unsigned char *elestr, unsigned char 
     if (new_listpack_bytes > old_listpack_bytes &&
         new_listpack_bytes > lp_malloc_size(lp)) {
         if ((lp = lp_realloc(lp,new_listpack_bytes)) == NULL) return NULL;
+        //扩容后的插入位置
         dst = lp + poff;
     }
 
     /* Setup the listpack relocating the elements to make the exact room
      * we need to store the new one. */
     if (where == LP_BEFORE) {
-        memmove(dst+enclen+backlen_size,dst,old_listpack_bytes-poff);
+        //插入位置后的数据往后挪，空出enclen+backlen_size的空间
+        memmove(dst+enclen+backlen_size,dst/*数据*/,old_listpack_bytes-poff/*数据长度*/);
     } else { /* LP_REPLACE. */
         long lendiff = (enclen+backlen_size)-replaced_len;
         memmove(dst+replaced_len+lendiff,
@@ -948,6 +959,7 @@ unsigned char *lpInsertInteger(unsigned char *lp, long long lval, unsigned char 
 /* Append the specified element 's' of length 'slen' at the head of the listpack. */
 unsigned char *lpPrepend(unsigned char *lp, unsigned char *s, uint32_t slen) {
     unsigned char *p = lpFirst(lp);
+    //p为空，listpack没有entry，读取总字节数，移动指针找到eof，s插入到eof元素前
     if (!p) return lpAppend(lp, s, slen);
     return lpInsert(lp, s, NULL, slen, p, LP_BEFORE, NULL);
 }

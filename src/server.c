@@ -3098,7 +3098,8 @@ static void propagateNow(int dbid, robj **argv, int argc, int target) {
 void alsoPropagate(int dbid, robj **argv, int argc, int target) {
     robj **argvcopy;
     int j;
-
+    //replication：masterhost is null，有从节点或repl_backlog不为空
+    //aof：不关闭aof
     if (!shouldPropagate(target))
         return;
 
@@ -3406,6 +3407,7 @@ void call(client *c, int flags) {
 
         /* Check if the command operated changes in the data set. If so
          * set for replication / AOF propagation. */
+        //改变数据了
         if (dirty) propagate_flags |= (PROPAGATE_AOF|PROPAGATE_REPL);
 
         /* If the client forced AOF / replication of the command, set

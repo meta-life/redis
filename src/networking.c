@@ -1867,12 +1867,15 @@ static int _writevToClient(client *c, ssize_t *nwritten) {
  * to client. */
 int _writeToClient(client *c, ssize_t *nwritten) {
     *nwritten = 0;
+    //从节点的client
     if (getClientType(c) == CLIENT_TYPE_SLAVE) {
         serverAssert(c->bufpos == 0 && listLength(c->reply) == 0);
 
         replBufBlock *o = listNodeValue(c->ref_repl_buf_node);
         serverAssert(o->used >= c->ref_block_pos);
         /* Send current block if it is not fully sent. */
+        // slave psync 命令有同步的offset，master从backlog中找到BufBlock
+        // 发送部分bufBlock数据
         if (o->used > c->ref_block_pos) {
             *nwritten = connWrite(c->conn, o->buf+c->ref_block_pos,
                                   o->used-c->ref_block_pos);
@@ -1882,11 +1885,13 @@ int _writeToClient(client *c, ssize_t *nwritten) {
 
         /* If we fully sent the object on head, go to the next one. */
         listNode *next = listNextNode(c->ref_repl_buf_node);
+        //head block数据都发完了
         if (next && c->ref_block_pos == o->used) {
             o->refcount--;
             ((replBufBlock *)(listNodeValue(next)))->refcount++;
             c->ref_repl_buf_node = next;
             c->ref_block_pos = 0;
+            //渐进删除refcount=0的block
             incrementalTrimReplicationBacklog(REPL_BACKLOG_TRIM_BLOCKS_PER_CALL);
         }
         return C_OK;
@@ -3184,8 +3189,8 @@ NULL
                 type = CLIENT_PAUSE_ALL;
             } else {
                 addReplyError(c,
-                    "CLIENT PAUSE mode must be WRITE or ALL");  
-                return;       
+                    "CLIENT PAUSE mode must be WRITE or ALL");
+                return;
             }
         }
 
@@ -3372,7 +3377,7 @@ NULL
             numflags++;
             if (c->flags & CLIENT_TRACKING_CACHING) {
                 addReplyBulkCString(c,"caching-yes");
-                numflags++;        
+                numflags++;
             }
         }
         if (c->flags & CLIENT_TRACKING_OPTOUT) {
@@ -3380,7 +3385,7 @@ NULL
             numflags++;
             if (c->flags & CLIENT_TRACKING_CACHING) {
                 addReplyBulkCString(c,"caching-no");
-                numflags++;        
+                numflags++;
             }
         }
         if (c->flags & CLIENT_TRACKING_NOLOOP) {
@@ -3636,7 +3641,7 @@ size_t getClientOutputBufferMemoryUsage(client *c) {
             repl_node_num = last->id - cur->id + 1;
         }
         return repl_buf_size + (repl_node_size*repl_node_num);
-    } else { 
+    } else {
         size_t list_item_size = sizeof(listNode) + sizeof(clientReplyBlock);
         return c->reply_bytes + (list_item_size*listLength(c->reply));
     }
@@ -3930,7 +3935,7 @@ void unpauseClients(pause_purpose purpose) {
     updateClientPauseTypeAndEndTime();
 }
 
-/* Returns true if clients are paused and false otherwise. */ 
+/* Returns true if clients are paused and false otherwise. */
 int areClientsPaused(void) {
     return server.client_pause_type != CLIENT_PAUSE_OFF;
 }

@@ -2903,8 +2903,10 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
 
     rdb->update_cksum = rdbLoadProgressCallback;
     rdb->max_processing_chunk = server.loading_process_events_interval_bytes;
+    //从conn中读9字节到buf
     if (rioRead(rdb,buf,9) == 0) goto eoferr;
     buf[9] = '\0';
+    //校验redis版本
     if (memcmp(buf,"REDIS",5) != 0) {
         serverLog(LL_WARNING,"Wrong signature trying to load DB from file");
         errno = EINVAL;
@@ -2926,6 +2928,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         robj *val;
 
         /* Read type. */
+        //读opcode
         if ((type = rdbLoadType(rdb)) == -1) goto eoferr;
 
         /* Handle special types. */
@@ -2933,6 +2936,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             /* EXPIRETIME: load an expire associated with the next key
              * to load. Note that after loading an expire we need to
              * load the actual type, and continue. */
+            //读取4个字节过期秒
             expiretime = rdbLoadTime(rdb);
             expiretime *= 1000;
             if (rioGetReadError(rdb)) goto eoferr;
@@ -2940,6 +2944,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         } else if (type == RDB_OPCODE_EXPIRETIME_MS) {
             /* EXPIRETIME_MS: milliseconds precision expire times introduced
              * with RDB v3. Like EXPIRETIME but no with more precision. */
+            //8字节过期毫秒
             expiretime = rdbLoadMillisecondTime(rdb,rdbver);
             if (rioGetReadError(rdb)) goto eoferr;
             continue; /* Read next opcode. */
@@ -2947,11 +2952,13 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             /* FREQ: LFU frequency. */
             uint8_t byte;
             if (rioRead(rdb,&byte,1) == 0) goto eoferr;
+            //读取8位LFU值
             lfu_freq = byte;
             continue; /* Read next opcode. */
         } else if (type == RDB_OPCODE_IDLE) {
             /* IDLE: LRU idle time. */
             uint64_t qword;
+            //解析encode过的数字
             if ((qword = rdbLoadLen(rdb,NULL)) == RDB_LENERR) goto eoferr;
             lru_idle = qword;
             continue; /* Read next opcode. */
@@ -3111,6 +3118,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
         if ((key = rdbGenericLoadStringObject(rdb,RDB_LOAD_SDS,NULL)) == NULL)
             goto eoferr;
         /* Read value */
+        //读不同类型的数据，返回redisObject
         val = rdbLoadObject(type,rdb,key,db->id,&error);
 
         /* Check if the key already expired. This function is used when loading
@@ -3145,6 +3153,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
                 serverAssert(server.repl_backlog != NULL && listLength(server.slaves) == 0);
                 robj keyobj;
                 initStaticStringObject(keyobj,key);
+                //过期key传播del或unlink
                 robj *argv[2];
                 argv[0] = server.lazyfree_lazy_expire ? shared.unlink : shared.del;
                 argv[1] = &keyobj;
@@ -3161,11 +3170,14 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             int added = dbAddRDBLoad(db,key,val);
             server.rdb_last_load_keys_loaded++;
             if (!added) {
+                //key重复了
                 if (rdbflags & RDBFLAGS_ALLOW_DUP) {
                     /* This flag is useful for DEBUG RELOAD special modes.
                      * When it's set we allow new keys to replace the current
                      * keys with the same name. */
+                    //删除旧key
                     dbSyncDelete(db,&keyobj);
+                    //添加新key
                     dbAddRDBLoad(db,key,val);
                 } else {
                     serverLog(LL_WARNING,
@@ -3175,6 +3187,7 @@ int rdbLoadRioWithLoadingCtx(rio *rdb, int rdbflags, rdbSaveInfo *rsi, rdbLoadin
             }
 
             /* Set the expire time if needed */
+            //设置key过期时间
             if (expiretime != -1) {
                 setExpire(NULL,db,&keyobj,expiretime);
             }
@@ -3389,7 +3402,7 @@ int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
         return C_ERR;
     }
     safe_to_exit_pipe = pipefds[0]; /* read end */
-    server.rdb_child_exit_pipe = pipefds[1]; /* write end */
+        server.rdb_child_exit_pipe = pipefds[1]; /* write end */
 
     /* Collect the connections of the replicas we want to transfer
      * the RDB to, which are i WAIT_BGSAVE_START state. */
@@ -3407,7 +3420,13 @@ int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
             replicationSetupSlaveForFullResync(slave,getPsyncInitialOffset());
         }
     }
-
+    /**
+     fork调用的一个奇妙之处就是它仅仅被调用一次，却能够返回两次，它可能有三种不同的返回值：
+    1）在父进程中，fork返回新创建子进程的进程ID；
+    2）在子进程中，fork返回0；
+    3）如果出现错误，fork返回一个负值；
+     子进程和父进程都会执行下面的代码块
+     */
     /* Create the child process. */
     if ((childpid = redisFork(CHILD_TYPE_RDB)) == 0) {
         /* Child */
@@ -3429,7 +3448,9 @@ int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
 
         rioFreeFd(&rdb);
         /* wake up the reader, tell it we're done. */
+        //关闭子进程写端，通知主进程读端
         close(rdb_pipe_write);
+        //关闭子进程写端，等待读取主进程写入的数据
         close(server.rdb_child_exit_pipe); /* close write end so that we can detect the close on the parent. */
         /* hold exit until the parent tells us it's safe. we're not expecting
          * to read anything, just get the error when the pipe is closed. */
@@ -3463,6 +3484,7 @@ int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
                 (long) childpid);
             server.rdb_save_time_start = time(NULL);
             server.rdb_child_type = RDB_CHILD_TYPE_SOCKET;
+            //关闭主进程写端，读取子进程发来的数据
             close(rdb_pipe_write); /* close write in parent so that it can detect the close on the child. */
             if (aeCreateFileEvent(server.el, server.rdb_pipe_read, AE_READABLE, rdbPipeReadHandler,NULL) == AE_ERR) {
                 serverPanic("Unrecoverable error creating server.rdb_pipe_read file event.");
